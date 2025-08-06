@@ -1,0 +1,249 @@
+import pandas as pd
+import numpy as np
+from sklearn.feature_selection import mutual_info_classif, f_classif
+import seaborn as sns
+import matplotlib.pyplot as plt
+import os
+import numpy as np
+import pandas as pd
+
+# Get the current working directory
+current_directory = os.getcwd()
+
+# Set the working directory to your project directory
+project_directory = '/Users/qijie/Desktop/DataAnalysisII'
+os.chdir(project_directory)
+
+# # 4-step Mediation Pipeline # #
+import statsmodels.api as sm
+from sklearn.utils import resample
+from tqdm import tqdm
+import itertools
+
+df = pd.read_csv('numerical_clean_03092024.csv', header=0)  # Replace with your actual DataFrame
+
+# Configuration
+N_BOOTSTRAPS = 5000
+ALPHA = 0.05
+MEDIATORS = ['Q10', 'Q11', 'Q12']
+DVS = ['Q25', 'Q26', 'Q27', 'Q28', 'Q29']
+IVS = ['Q5', 'Q6', 'Q7', 'Q8', 'Q9']
+
+def bootstrap_ci(model, X, y, n_bootstraps=5000):
+    coefs = []
+    n = len(X)
+    for _ in range(n_bootstraps):
+        indices = np.random.choice(n, n, replace=True)
+        X_resampled = X.iloc[indices]
+        y_resampled = y.iloc[indices]
+        try:
+            model_resampled = sm.OLS(y_resampled, X_resampled).fit()
+            coefs.append(model_resampled.params)
+        except:
+            continue
+    coefs = np.array(coefs)
+    ci_lower = np.percentile(coefs, 2.5, axis=0)
+    ci_upper = np.percentile(coefs, 97.5, axis=0)
+    return ci_lower, ci_upper
+
+results = []
+pbar = tqdm(total=len(IVS) * len(MEDIATORS) * len(DVS))
+
+for iv, mediator, dv in itertools.product(IVS, MEDIATORS, DVS):
+    pbar.update(1)
+    try:
+        X1 = sm.add_constant(df[iv])
+        model1 = sm.OLS(df[dv], X1).fit()
+        c = model1.params[iv]
+        p_c = model1.pvalues[iv]
+        c_ci_lower, c_ci_upper = bootstrap_ci(model1, X1, df[dv])
+
+        X2 = sm.add_constant(df[iv])
+        model2 = sm.OLS(df[mediator], X2).fit()
+        a = model2.params[iv]
+        p_a = model2.pvalues[iv]
+        a_ci_lower, a_ci_upper = bootstrap_ci(model2, X2, df[mediator])
+
+        X3 = sm.add_constant(df[mediator])
+        model3 = sm.OLS(df[dv], X3).fit()
+        b = model3.params[mediator]
+        p_b = model3.pvalues[mediator]
+        b_ci_lower, b_ci_upper = bootstrap_ci(model3, X3, df[dv])
+
+        if p_c < ALPHA and p_a < ALPHA and p_b < ALPHA:
+            X4 = sm.add_constant(df[[iv, mediator]])
+            model4 = sm.OLS(df[dv], X4).fit()
+            c_prime = model4.params[iv]
+            p_c_prime = model4.pvalues[iv]
+            b_prime = model4.params[mediator]
+            p_b_prime = model4.pvalues[mediator]
+            c_prime_ci_lower, c_prime_ci_upper = bootstrap_ci(model4, X4, df[dv])
+
+            r2_step1 = model1.rsquared
+            r2_adj_step1 = model1.rsquared_adj
+            r2_step4 = model4.rsquared
+            r2_adj_step4 = model4.rsquared_adj
+            delta_r2 = r2_step4 - r2_step1
+            delta_r2_adj = r2_adj_step4 - r2_adj_step1
+
+            indirect_effect = a * b_prime
+            indirect_effects = []
+            for _ in range(N_BOOTSTRAPS):
+                idx = np.random.choice(len(df), len(df), replace=True)
+                df_boot = df.iloc[idx]
+                a_b = sm.OLS(df_boot[mediator], sm.add_constant(df_boot[iv])).fit().params[iv]
+                b_b = sm.OLS(df_boot[dv], sm.add_constant(df_boot[[iv, mediator]])).fit().params[mediator]
+                indirect_effects.append(a_b * b_b)
+            indirect_ci_lower = np.percentile(indirect_effects, 2.5)
+            indirect_ci_upper = np.percentile(indirect_effects, 97.5)
+
+            mediation_type = 'p' if p_c_prime < ALPHA else 'f'
+        else:
+            c_prime = p_c_prime = b_prime = p_b_prime = np.nan
+            c_prime_ci_lower = c_prime_ci_upper = np.nan
+            indirect_effect = indirect_ci_lower = indirect_ci_upper = np.nan
+            mediation_type = None
+            r2_step1 = r2_step4 = r2_adj_step1 = r2_adj_step4 = delta_r2 = delta_r2_adj = np.nan
+
+        results.append({
+            'IV': iv,
+            'Mediator': mediator,
+            'DV': dv,
+            'Path c': c,
+            'p(c)': p_c,
+            'CI c lower': c_ci_lower[1],
+            'CI c upper': c_ci_upper[1],
+            'Path a': a,
+            'p(a)': p_a,
+            'CI a lower': a_ci_lower[1],
+            'CI a upper': a_ci_upper[1],
+            'Path b': b,
+            'p(b)': p_b,
+            'CI b lower': b_ci_lower[1],
+            'CI b upper': b_ci_upper[1],
+            'Path c\'': c_prime,
+            'p(c\')': p_c_prime,
+            'CI c\' lower': c_prime_ci_lower[1] if mediation_type else np.nan,
+            'CI c\' upper': c_prime_ci_upper[1] if mediation_type else np.nan,
+            'Indirect (a*b)': indirect_effect,
+            'CI Indirect lower': indirect_ci_lower,
+            'CI Indirect upper': indirect_ci_upper,
+            'Mediation Type': mediation_type,
+            'R² Step 1': r2_step1,
+            'Adj R² Step 1': r2_adj_step1,
+            'R² Step 4': r2_step4,
+            'Adj R² Step 4': r2_adj_step4,
+            'Δ R²': delta_r2,
+            'Δ Adj R²': delta_r2_adj,
+            'Significant Paths': int(p_c < ALPHA) + int(p_a < ALPHA) + int(p_b < ALPHA)
+        })
+
+    except Exception as e:
+        print(f"Error with {iv} → {mediator} → {dv}: {e}")
+        continue
+
+pbar.close()
+results_df = pd.DataFrame(results)
+
+# Save to Excel
+results_df.to_excel("comprehensive_mediation_results_with_r2CC06082025.xlsx", index=False)
+print("✅ Mediation results saved to 'comprehensive_mediation_results_with_r2CC06082025.xlsx'")
+
+# # Moderation Pipeline # #
+from sklearn.linear_model import LinearRegression
+from scipy import stats
+
+# Create an empty list to store the results
+results = []
+
+# Define the y columns (dependent variables)
+y_columns = ['Q10', 'Q11', 'Q12', 'Q25', 'Q26', 'Q27', 'Q28', 'Q29']
+
+# Iterate over y columns
+for y_column in y_columns:
+    # Iterate over predictors (IV) and moderators (MV)
+    for iv_column in ['Q5', 'Q6', 'Q7', 'Q8', 'Q9']:
+        for mv_column in ['Q3', 'Q4', 'Q1', 'Q48.1', 'Ethnicity simplified', 'Q21', 'Q22', 'Q23', 'Q24']:
+            
+            # Center the IV and moderator (critical for interaction interpretation)
+            df2[iv_column + '_centered'] = df2[iv_column] - df2[iv_column].mean()
+            df2[mv_column + '_centered'] = df2[mv_column] - df2[mv_column].mean()
+            
+            # Create interaction term (product of centered variables)
+            df2['interaction'] = df2[iv_column + '_centered'] * df2[mv_column + '_centered']
+            
+            # Prepare design matrix (IV, MV, and interaction)
+            X = df2[[iv_column + '_centered', mv_column + '_centered', 'interaction']]
+            y = df2[y_column]
+            
+            # Fit linear regression model
+            model = LinearRegression().fit(X, y)
+            
+            # Calculate standard errors, t-values, and p-values
+            predictions = model.predict(X)
+            n = len(y)
+            k = X.shape[1]  # Number of predictors
+            residuals = y - predictions
+            MSE = np.sum(residuals**2) / (n - k - 1)
+            X_with_intercept = np.column_stack([np.ones(n), X])
+            cov_matrix = MSE * np.linalg.inv(X_with_intercept.T @ X_with_intercept)
+            SE = np.sqrt(np.diag(cov_matrix))[1:]  # Skip intercept
+            t_values = model.coef_ / SE
+            p_values = 2 * (1 - stats.t.cdf(np.abs(t_values), df=n-k-1))
+            
+            # Extract all key statistics
+            b_iv = model.coef_[0]          # IV coefficient
+            b_mv = model.coef_[1]          # Moderator coefficient
+            b_interaction = model.coef_[2]  # Interaction coefficient
+            p_iv = p_values[0]             # IV p-value
+            p_mv = p_values[1]             # Moderator p-value
+            p_interaction = p_values[2]    # Interaction p-value
+            r_squared = model.score(X, y)  # R-squared
+            
+            # Calculate 95% confidence intervals
+            ci_lower = model.coef_ - 1.96 * SE
+            ci_upper = model.coef_ + 1.96 * SE
+            
+            # Store results (only if interaction is significant)
+            if p_interaction < 0.05:
+                results.append({
+                    'Outcome': y_column,
+                    'Predictor (IV)': iv_column,
+                    'Moderator (MV)': mv_column,
+                    
+                    # Main effects
+                    'IV Coeff (b)': b_iv,
+                    'IV p-value': p_iv,
+                    'IV 95% CI': f"[{ci_lower[0]:.3f}, {ci_upper[0]:.3f}]",
+                    
+                    'MV Coeff (b)': b_mv,
+                    'MV p-value': p_mv,
+                    'MV 95% CI': f"[{ci_lower[1]:.3f}, {ci_upper[1]:.3f}]",
+                    
+                    # Interaction effect
+                    'Interaction Coeff (b)': b_interaction,
+                    'Interaction p-value': p_interaction,
+                    'Interaction 95% CI': f"[{ci_lower[2]:.3f}, {ci_upper[2]:.3f}]",
+                    
+                    # Model fit
+                    'R-squared': r_squared,
+                    'Adjusted R-squared': 1 - (1 - r_squared) * (n - 1) / (n - k - 1)
+                })
+
+# Convert results to DataFrame
+results_df = pd.DataFrame(results)
+
+# Reorder columns for clarity
+column_order = [
+    'Outcome', 'Predictor (IV)', 'Moderator (MV)',
+    'IV Coeff (b)', 'IV p-value', 'IV 95% CI',
+    'MV Coeff (b)', 'MV p-value', 'MV 95% CI',
+    'Interaction Coeff (b)', 'Interaction p-value', 'Interaction 95% CI',
+    'R-squared', 'Adjusted R-squared'
+]
+results_df_CC = results_df[column_order]
+
+# Print all significant interactions
+print("Complete Moderation Analysis Results:")
+print(results_df_CC.to_string(float_format="%.3f", index=False))
+results_df_CC.to_csv('moderationresultsCC04042025.csv', index=False) 
