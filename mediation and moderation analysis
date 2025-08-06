@@ -149,6 +149,54 @@ results_df = pd.DataFrame(results)
 results_df.to_excel("comprehensive_mediation_results_with_r2CC06082025.xlsx", index=False)
 print("✅ Mediation results saved to 'comprehensive_mediation_results_with_r2CC06082025.xlsx'")
 
+
+# Assign the Tier System # 
+import pandas as pd
+def apply_tier_system(df):
+    """
+    Assigns Tier A–D to mediators based on:
+      - Tier A: ≥3 mediation triads with Indirect (a*b) > 0.05
+      - Tier B: ≥3 mediation triads with 0.02 ≤ Indirect (a*b) ≤ 0.05
+      - Tier C: ≥3 mediation triads with Indirect (a*b) < 0.02
+      - Tier D: all others
+    Only rows with Mediation Type 'p' or 'f' are considered.
+    """
+    med = df[df['Mediation Type'].isin(['p', 'f'])]
+    tier_map = {}
+    for mediator, group in med.groupby('Mediator'):
+        count_A = (group['Indirect (a*b)'] > 0.05).sum()
+        count_B = ((group['Indirect (a*b)'] >= 0.02) & (group['Indirect (a*b)'] <= 0.05)).sum()
+        count_C = (group['Indirect (a*b)'] < 0.02).sum()
+        if count_A >= 3:
+            tier_map[mediator] = 'A'
+        elif count_B >= 3:
+            tier_map[mediator] = 'B'
+        elif count_C >= 3:
+            tier_map[mediator] = 'C'
+        else:
+            tier_map[mediator] = 'D'
+    df['Tier'] = df['Mediator'].map(tier_map).fillna('D')
+    return df
+
+# Load the results
+rn_df = pd.read_excel('comprehensive_mediation_results_with_r2RN.xlsx')
+cc_df = pd.read_excel('comprehensive_mediation_results_with_r2CC.xlsx')
+
+# Apply the tier system
+rn_tiered = apply_tier_system(rn_df)
+cc_tiered = apply_tier_system(cc_df)
+
+# Save outputs
+rn_tiered.to_excel('comprehensive_mediation_results_with_tiers_RN.xlsx', index=False)
+cc_tiered.to_excel('comprehensive_mediation_results_with_tiers_CC.xlsx', index=False)
+
+print("Tier assignment complete.")
+
+
+
+
+
+
 # # Moderation Pipeline # #
 from sklearn.linear_model import LinearRegression
 from scipy import stats
