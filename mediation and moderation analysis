@@ -151,46 +151,58 @@ print("✅ Mediation results saved to 'comprehensive_mediation_results_with_r2CC
 
 
 # Assign the Tier System # 
-import pandas as pd
-def apply_tier_system(df):
+# ─── User Configuration ───────────────────────────────────────────────────────
+# Update these to the correct paths on your system:
+RN_FILE = 'comprehensive_mediation_results_with_r2RN.xlsx'
+CC_FILE = 'comprehensive_mediation_results_with_r2CC.xlsx'
+
+# Output filenames
+RN_OUT = 'mediation_results_tiered_by_ab_RN.xlsx'
+CC_OUT = 'mediation_results_tiered_by_ab_CC.xlsx'
+# ────────────────────────────────────────────────────────────────────────────────
+
+def assign_tier_by_ab(ab):
     """
-    Assigns Tier A–D to mediators based on:
-      - Tier A: ≥3 mediation triads with Indirect (a*b) > 0.05
-      - Tier B: ≥3 mediation triads with 0.02 ≤ Indirect (a*b) ≤ 0.05
-      - Tier C: ≥3 mediation triads with Indirect (a*b) < 0.02
-      - Tier D: all others
-    Only rows with Mediation Type 'p' or 'f' are considered.
+    Assigns a tier based solely on the indirect effect (a*b):
+      - Tier A: ab > 0.05
+      - Tier B: 0.02 <= ab <= 0.05
+      - Tier C: ab < 0.02
+      - Tier D: missing values
     """
-    med = df[df['Mediation Type'].isin(['p', 'f'])]
-    tier_map = {}
-    for mediator, group in med.groupby('Mediator'):
-        count_A = (group['Indirect (a*b)'] > 0.05).sum()
-        count_B = ((group['Indirect (a*b)'] >= 0.02) & (group['Indirect (a*b)'] <= 0.05)).sum()
-        count_C = (group['Indirect (a*b)'] < 0.02).sum()
-        if count_A >= 3:
-            tier_map[mediator] = 'A'
-        elif count_B >= 3:
-            tier_map[mediator] = 'B'
-        elif count_C >= 3:
-            tier_map[mediator] = 'C'
-        else:
-            tier_map[mediator] = 'D'
-    df['Tier'] = df['Mediator'].map(tier_map).fillna('D')
-    return df
+    if pd.isna(ab):
+        return 'D'
+    if ab > 0.05:
+        return 'A'
+    elif ab >= 0.02:
+        return 'B'
+    else:
+        return 'C'
 
-# Load the results
-rn_df = pd.read_excel('comprehensive_mediation_results_with_r2RN.xlsx')
-cc_df = pd.read_excel('comprehensive_mediation_results_with_r2CC.xlsx')
+def tier_dataframe(input_file, output_file):
+    # Load the mediation results
+    df = pd.read_excel(input_file)
+    
+    # Ensure the column name matches exactly your sheet
+    col = 'Indirect (a*b)'
+    if col not in df.columns:
+        raise ValueError(f"Column '{col}' not found in {input_file}")
+    
+    # Apply tiering
+    df['Tier'] = df[col].apply(assign_tier_by_ab)
+    
+    # Save
+    df.to_excel(output_file, index=False)
+    print(f"  • Saved tiered results to: {output_file}")
 
-# Apply the tier system
-rn_tiered = apply_tier_system(rn_df)
-cc_tiered = apply_tier_system(cc_df)
+def main():
+    print("Applying Tier system based on indirect effect (a*b)…")
+    tier_dataframe(RN_FILE, RN_OUT)
+    tier_dataframe(CC_FILE, CC_OUT)
+    print("Done.")
 
-# Save outputs
-rn_tiered.to_excel('comprehensive_mediation_results_with_tiers_RN.xlsx', index=False)
-cc_tiered.to_excel('comprehensive_mediation_results_with_tiers_CC.xlsx', index=False)
+if __name__ == '__main__':
+    main()
 
-print("Tier assignment complete.")
 
 
 
