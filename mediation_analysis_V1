@@ -1,0 +1,219 @@
+///////MEDIATION ANALYSIS VERSION I (without R square values)/////
+
+
+import numpy as np
+import statsmodels.api as sm
+from sklearn.utils import resample
+from tqdm import tqdm
+import itertools
+df=df2
+# Configuration
+N_BOOTSTRAPS = 5000  # Number of bootstrap samples
+ALPHA = 0.05  # Significance level
+MEDIATORS = ['Q10', 'Q11', 'Q12']  # Add all your mediators
+DVS = ['Q25', 'Q26', 'Q27', 'Q28', 'Q29']  # Add all your DVs
+IVS = ['Q5', 'Q6', 'Q7', 'Q8', 'Q9']  # Add all your IVs
+
+def bootstrap_ci(model, X, y, n_bootstraps=5000):
+    """Calculate bootstrap confidence intervals for coefficients"""
+    coefs = []
+    n = len(X)
+    
+    for _ in range(n_bootstraps):
+        # Resample with replacement
+        indices = np.random.choice(n, n, replace=True)
+        X_resampled = X.iloc[indices]
+        y_resampled = y.iloc[indices]
+        
+        # Fit model
+        try:
+            model_resampled = sm.OLS(y_resampled, X_resampled).fit()
+            coefs.append(model_resampled.params)
+        except:
+            continue
+    
+    coefs = np.array(coefs)
+    ci_lower = np.percentile(coefs, 2.5, axis=0)
+    ci_upper = np.percentile(coefs, 97.5, axis=0)
+    
+    return ci_lower, ci_upper
+
+# Initialize results storage
+results = []
+
+# Create progress bar for all combinations
+total_combinations = len(IVS) * len(MEDIATORS) * len(DVS)
+pbar = tqdm(total=total_combinations, desc="Testing mediation models")
+
+# Test all IV × Mediator × DV combinations
+for iv, mediator, dv in itertools.product(IVS, MEDIATORS, DVS):
+    pbar.update(1)
+    try:
+        # Step 1: IV -> DV (path c)
+        X1 = sm.add_constant(df[iv])
+        model1 = sm.OLS(df[dv], X1).fit()
+        c = model1.params[iv]
+        p_c = model1.pvalues[iv]
+        c_ci_lower, c_ci_upper = bootstrap_ci(model1, X1, df[dv], N_BOOTSTRAPS)
+        
+        # Step 2: IV -> Mediator (path a)
+        X2 = sm.add_constant(df[iv])
+        model2 = sm.OLS(df[mediator], X2).fit()
+        a = model2.params[iv]
+        p_a = model2.pvalues[iv]
+        a_ci_lower, a_ci_upper = bootstrap_ci(model2, X2, df[mediator], N_BOOTSTRAPS)
+        
+        # Step 3: Mediator -> DV (path b)
+        X3 = sm.add_constant(df[mediator])
+        model3 = sm.OLS(df[dv], X3).fit()
+        b = model3.params[mediator]
+        p_b = model3.pvalues[mediator]
+        b_ci_lower, b_ci_upper = bootstrap_ci(model3, X3, df[dv], N_BOOTSTRAPS)
+        
+        # Check if first three steps are significant
+        if p_c < ALPHA and p_a < ALPHA and p_b < ALPHA:
+            # Step 4: IV + Mediator -> DV (paths c' and b)
+            X4 = sm.add_constant(df[[iv, mediator]])
+            model4 = sm.OLS(df[dv], X4).fit()
+            c_prime = model4.params[iv]
+            p_c_prime = model4.pvalues[iv]
+            b_prime = model4.params[mediator]
+            p_b_prime = model4.pvalues[mediator]
+            c_prime_ci_lower, c_prime_ci_upper = bootstrap_ci(model4, X4, df[dv], N_BOOTSTRAPS)
+            
+            # Calculate indirect effect (a*b)
+            indirect_effect = a * b_prime
+            # Bootstrap for indirect effect CI
+            indirect_effects = []
+            for _ in range(N_BOOTSTRAPS):
+                indices = np.random.choice(len(df), len(df), replace=True)
+                df_resampled = df.iloc[indices]
+                
+                # Path a
+                a_boot = sm.OLS(df_resampled[mediator], sm.add_constant(df_resampled[iv])).fit().params[iv]
+                # Path b
+                b_boot = sm.OLS(df_resampled[dv], sm.add_constant(df_resampled[[iv, mediator]])).fit().params[mediator]
+                
+                indirect_effects.append(a_boot * b_boot)
+            
+            indirect_ci_lower = np.percentile(indirect_effects, 2.5)
+            indirect_ci_upper = np.percentile(indirect_effects, 97.5)
+            
+            # Determine mediation type
+            if p_c_prime < ALPHA:
+                mediation_type = 'p'  # Partial mediation
+            else:
+                mediation_type = 'f'  # Full mediation
+        else:
+            c_prime = np.nan
+            p_c_prime = np.nan
+            b_prime = np.nan
+            p_b_prime = np.nan
+            indirect_effect = np.nan
+            indirect_ci_lower = np.nan
+            indirect_ci_upper = np.nan
+            mediation_type = None
+        
+        # Save results
+        results.append({
+            'Independent Variable': iv,
+            'Mediator': mediator,
+            'Dependent Variable': dv,
+            'Path c (IV->DV)': c,
+            'Path c p-value': p_c,
+            'Path c CI Lower': c_ci_lower[1],
+            'Path c CI Upper': c_ci_upper[1],
+            'Path a (IV->M)': a,
+            'Path a p-value': p_a,
+            'Path a CI Lower': a_ci_lower[1],
+            'Path a CI Upper': a_ci_upper[1],
+            'Path b (M->DV)': b,
+            'Path b p-value': p_b,
+            'Path b CI Lower': b_ci_lower[1],
+            'Path b CI Upper': b_ci_upper[1],
+            'Path c\' (IV->DV|M)': c_prime,
+            'Path c\' p-value': p_c_prime,
+            'Path c\' CI Lower': c_prime_ci_lower[1] if mediation_type else np.nan,
+            'Path c\' CI Upper': c_prime_ci_upper[1] if mediation_type else np.nan,
+            'Indirect Effect (a*b)': indirect_effect,
+            'Indirect Effect CI Lower': indirect_ci_lower,
+            'Indirect Effect CI Upper': indirect_ci_upper,
+            'Mediation Type': mediation_type,
+            'Significant Steps': int(p_c < ALPHA) + int(p_a < ALPHA) + int(p_b < ALPHA)
+        })
+        
+    except Exception as e:
+        print(f"\nError with {iv}→{mediator}→{dv}: {str(e)}")
+        continue
+
+pbar.close()
+
+# Convert results to DataFrame
+results_df = pd.DataFrame(results)
+
+# Filter to only show models where at least one path was significant
+significant_results = results_df[
+    (results_df['Path c p-value'] < ALPHA) | 
+    (results_df['Path a p-value'] < ALPHA) | 
+    (results_df['Path b p-value'] < ALPHA)
+]
+
+# Save to Excel with conditional formatting
+with pd.ExcelWriter('comprehensive_mediation_results.xlsx', engine='xlsxwriter') as writer:
+    # Save full results
+    results_df.to_excel(writer, sheet_name='All Models', index=False)
+    
+    # Save significant results only
+    significant_results.to_excel(writer, sheet_name='Significant Models', index=False)
+    
+    # Add formatting
+    workbook = writer.book
+    
+    # Format for significant models sheet
+    for sheet_name in ['All Models', 'Significant Models']:
+        worksheet = writer.sheets[sheet_name]
+        
+        # Add conditional formatting for p-values
+        format_red = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+        format_green = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
+        
+        # Get column positions
+        cols = results_df.columns
+        p_cols = [i for i, col in enumerate(cols) if 'p-value' in col]
+        
+        # Highlight significant p-values
+        for col_idx in p_cols:
+            worksheet.conditional_format(1, col_idx, len(results_df), col_idx, {
+                'type': 'cell',
+                'criteria': '<=',
+                'value': ALPHA,
+                'format': format_green
+            })
+            worksheet.conditional_format(1, col_idx, len(results_df), col_idx, {
+                'type': 'cell',
+                'criteria': '>',
+                'value': ALPHA,
+                'format': format_red
+            })
+        
+        # Format mediation type
+        med_type_col = cols.get_loc('Mediation Type')
+        worksheet.conditional_format(1, med_type_col, len(results_df), med_type_col, {
+            'type': 'text',
+            'criteria': 'containing',
+            'value': 'p',
+            'format': workbook.add_format({'bold': True, 'font_color': '#1F497D'})
+        })
+        worksheet.conditional_format(1, med_type_col, len(results_df), med_type_col, {
+            'type': 'text',
+            'criteria': 'containing',
+            'value': 'f',
+            'format': workbook.add_format({'bold': True, 'font_color': '#C65911'})
+        })
+
+print("""
+Mediation analysis complete. Results saved to:
+- comprehensive_mediation_results.xlsx
+  * 'All Models' sheet: Complete results for all combinations
+  * 'Significant Models' sheet: Only models with at least one significant path
+""")
