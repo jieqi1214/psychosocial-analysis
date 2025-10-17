@@ -1,0 +1,144 @@
+//// Mediation Analysis with SEED SET////
+
+
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from tqdm import tqdm
+import itertools
+
+# Set a fixed seed for reproducibility
+SEED = 42
+rng = np.random.default_rng(SEED)
+
+# Load your dataframe here (replace df = pd.read_csv(...))
+# df = pd.read_csv("your_data.csv")
+
+# Configuration
+N_BOOTSTRAPS = 5000
+ALPHA = 0.05
+MEDIATORS = ['Q10', 'Q11', 'Q12']
+DVS = ['Q25', 'Q26', 'Q27', 'Q28', 'Q29']
+IVS = ['Q5', 'Q6', 'Q7', 'Q8', 'Q9']
+
+def bootstrap_ci(model, X, y, n_bootstraps=5000):
+    coefs = []
+    n = len(X)
+    for _ in range(n_bootstraps):
+        indices = rng.integers(0, n, size=n)
+        X_resampled = X.iloc[indices]
+        y_resampled = y.iloc[indices]
+        try:
+            model_resampled = sm.OLS(y_resampled, X_resampled).fit()
+            coefs.append(model_resampled.params)
+        except:
+            continue
+    coefs = np.array(coefs)
+    ci_lower = np.percentile(coefs, 2.5, axis=0)
+    ci_upper = np.percentile(coefs, 97.5, axis=0)
+    return ci_lower, ci_upper
+
+def run_mediation(df):
+    results = []
+    pbar = tqdm(total=len(IVS) * len(MEDIATORS) * len(DVS))
+
+    for iv, mediator, dv in itertools.product(IVS, MEDIATORS, DVS):
+        pbar.update(1)
+        try:
+            X1 = sm.add_constant(df[iv])
+            model1 = sm.OLS(df[dv], X1).fit()
+            c = model1.params[iv]
+            p_c = model1.pvalues[iv]
+            c_ci_lower, c_ci_upper = bootstrap_ci(model1, X1, df[dv])
+
+            X2 = sm.add_constant(df[iv])
+            model2 = sm.OLS(df[mediator], X2).fit()
+            a = model2.params[iv]
+            p_a = model2.pvalues[iv]
+            a_ci_lower, a_ci_upper = bootstrap_ci(model2, X2, df[mediator])
+
+            X3 = sm.add_constant(df[mediator])
+            model3 = sm.OLS(df[dv], X3).fit()
+            b = model3.params[mediator]
+            p_b = model3.pvalues[mediator]
+            b_ci_lower, b_ci_upper = bootstrap_ci(model3, X3, df[dv])
+
+            if p_c < ALPHA and p_a < ALPHA and p_b < ALPHA:
+                X4 = sm.add_constant(df[[iv, mediator]])
+                model4 = sm.OLS(df[dv], X4).fit()
+                c_prime = model4.params[iv]
+                p_c_prime = model4.pvalues[iv]
+                b_prime = model4.params[mediator]
+                p_b_prime = model4.pvalues[mediator]
+                c_prime_ci_lower, c_prime_ci_upper = bootstrap_ci(model4, X4, df[dv])
+
+                r2_step1 = model1.rsquared
+                r2_adj_step1 = model1.rsquared_adj
+                r2_step4 = model4.rsquared
+                r2_adj_step4 = model4.rsquared_adj
+                delta_r2 = r2_step4 - r2_step1
+                delta_r2_adj = r2_adj_step4 - r2_adj_step1
+
+                indirect_effect = a * b_prime
+                indirect_effects = []
+                for _ in range(N_BOOTSTRAPS):
+                    idx = rng.integers(0, len(df), size=len(df))
+                    df_boot = df.iloc[idx]
+                    a_b = sm.OLS(df_boot[mediator], sm.add_constant(df_boot[iv])).fit().params[iv]
+                    b_b = sm.OLS(df_boot[dv], sm.add_constant(df_boot[[iv, mediator]])).fit().params[mediator]
+                    indirect_effects.append(a_b * b_b)
+                indirect_ci_lower = np.percentile(indirect_effects, 2.5)
+                indirect_ci_upper = np.percentile(indirect_effects, 97.5)
+
+                mediation_type = 'p' if p_c_prime < ALPHA else 'f'
+            else:
+                c_prime = p_c_prime = b_prime = p_b_prime = np.nan
+                c_prime_ci_lower = c_prime_ci_upper = np.nan
+                indirect_effect = indirect_ci_lower = indirect_ci_upper = np.nan
+                mediation_type = None
+                r2_step1 = r2_step4 = r2_adj_step1 = r2_adj_step4 = delta_r2 = delta_r2_adj = np.nan
+
+            results.append({
+                'IV': iv,
+                'Mediator': mediator,
+                'DV': dv,
+                'Path c': c,
+                'p(c)': p_c,
+                'CI c lower': c_ci_lower[1],
+                'CI c upper': c_ci_upper[1],
+                'Path a': a,
+                'p(a)': p_a,
+                'CI a lower': a_ci_lower[1],
+                'CI a upper': a_ci_upper[1],
+                'Path b': b,
+                'p(b)': p_b,
+                'CI b lower': b_ci_lower[1],
+                'CI b upper': b_ci_upper[1],
+                'Path c\'': c_prime,
+                'p(c\')': p_c_prime,
+                'CI c\' lower': c_prime_ci_lower[1] if mediation_type else np.nan,
+                'CI c\' upper': c_prime_ci_upper[1] if mediation_type else np.nan,
+                'Indirect (a*b)': indirect_effect,
+                'CI Indirect lower': indirect_ci_lower,
+                'CI Indirect upper': indirect_ci_upper,
+                'Mediation Type': mediation_type,
+                'R² Step 1': r2_step1,
+                'Adj R² Step 1': r2_adj_step1,
+                'R² Step 4': r2_step4,
+                'Adj R² Step 4': r2_adj_step4,
+                'Δ R²': delta_r2,
+                'Δ Adj R²': delta_r2_adj,
+                'Significant Paths': int(p_c < ALPHA) + int(p_a < ALPHA) + int(p_b < ALPHA)
+            })
+
+        except Exception as e:
+            print(f"Error with {iv} → {mediator} → {dv}: {e}")
+            continue
+
+    pbar.close()
+    return pd.DataFrame(results)
+
+# Example call after loading your data:
+results_df = run_mediation(df2)
+results_df.to_excel("comprehensive_mediation_results_with_r2_seeded_CC.xlsx", index=False)
+
